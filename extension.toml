@@ -1,0 +1,13 @@
+id = "imba"
+name = "Imba"
+description = "Imba language support."
+version = "0.0.1"
+schema_version = 1
+authors = ["Imba maintainers"]
+repository = "https://github.com/imba/zed-imba"
+
+# Local dev grammar source. Run `node scripts/update-local-grammar-rev.js`
+# after committing changes in /Users/sindre/repos/treesitter-imba.
+[grammars.imba]
+repository = "file:///Users/sindre/repos/treesitter-imba"
+rev = "597c269b51da751bd9f7424f805007ec10493aa5"
