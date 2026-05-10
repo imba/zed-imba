@@ -14,7 +14,7 @@ const TAG_DOCUMENT_SYMBOL = new RegExp(
   `^(\\s*)(?:\\$[A-Za-z_][-\\w]*\\$\\s+)?(?:export\\s+(?:default\\s+)?)?(?:(?:extend|global|local|declare|abstract)\\s+)*tag\\s+(${TAG_NAME})\\b`,
 );
 const CLASS_DOCUMENT_SYMBOL = new RegExp(
-  `^(\\s*)(?:\\$[A-Za-z_][-\\w]*\\$\\s+)?(?:export\\s+(?:default\\s+)?)?(?:(?:global|declare|abstract|extend|strict)\\s+)*(class|interface|mixin)\\s+(${PROPERTY_NAME}(?:\\.${PROPERTY_NAME})*)\\b`,
+  `^(\\s*)(?:\\$[A-Za-z_][-\\w]*\\$\\s+)?((?:export\\s+(?:default\\s+)?)?(?:(?:global|declare|abstract|extend|strict)\\s+)*)(class|interface|mixin)\\s+(${PROPERTY_NAME}(?:\\.${PROPERTY_NAME})*)\\b`,
 );
 const METHOD_DOCUMENT_SYMBOL = new RegExp(
   `^(\\s*)(?:(?:global|static|protected|private|declare)\\s+)*(def|get|set|constructor)\\s+(?:(?:${IDENTIFIER}|self|this)[.#])?(${PROPERTY_NAME})\\b`,
@@ -180,13 +180,21 @@ function workspaceSymbols(query) {
   }
 
   const seen = new Set();
-  return symbols
-    .filter(symbol => {
-      const key = `${symbol.name}\0${symbol.location.uri}\0${symbol.location.range.start.line}`;
+  const entries = symbols
+    .map((symbol, index) => ({ symbol, index }))
+    .filter(({ symbol }) => {
+      const key = `${matchName(symbol)}\0${symbol.location.uri}\0${symbol.location.range.start.line}`;
       if (seen.has(key)) return false;
       seen.add(key);
-      return matchesQuery(symbol.name, query);
-    })
+      return matchesQuery(matchName(symbol), query);
+    });
+
+  if (query.trim()) {
+    entries.sort((left, right) => compareWorkspaceSymbols(left, right, query));
+  }
+
+  return entries
+    .map(entry => lspWorkspaceSymbol(entry.symbol))
     .slice(0, 2000);
 }
 
@@ -241,15 +249,17 @@ function workspaceSymbolsForText(uri, text) {
 
     const klass = CLASS_DOCUMENT_SYMBOL.exec(lines[line]);
     if (klass) {
+      const detail = declarationDetail(klass[2], klass[3]);
       symbols.push(
         workspaceSymbolFromMatch(
           uri,
           lines[line],
           line,
           klass,
-          3,
-          klass[2],
-          symbolKindForClass(klass[2]),
+          4,
+          detail,
+          symbolKindForClass(klass[3]),
+          workspaceClassDisplayName(klass[4], detail),
         ),
       );
     }
@@ -258,7 +268,7 @@ function workspaceSymbolsForText(uri, text) {
   return symbols;
 }
 
-function workspaceSymbolFromMatch(uri, lineText, line, match, nameIndex, containerName, kind) {
+function workspaceSymbolFromMatch(uri, lineText, line, match, nameIndex, containerName, kind, displayName) {
   const name = match[nameIndex];
   const character = lineText.indexOf(name, match[1].length);
   const range = {
@@ -267,10 +277,28 @@ function workspaceSymbolFromMatch(uri, lineText, line, match, nameIndex, contain
   };
 
   return {
-    name,
+    name: displayName || name,
+    matchName: name,
     kind,
     location: { uri, range },
     containerName,
+  };
+}
+
+function workspaceClassDisplayName(name, detail) {
+  if (/\bextend\b/.test(detail)) return `${name} · extend class`;
+  if (/\bdeclare\b/.test(detail)) return `${name} · declare class`;
+  if (/\binterface\b/.test(detail)) return `${name} · interface`;
+  if (/\bmixin\b/.test(detail)) return `${name} · mixin`;
+  return `${name} · class`;
+}
+
+function lspWorkspaceSymbol(symbol) {
+  return {
+    name: symbol.name,
+    kind: symbol.kind,
+    location: symbol.location,
+    containerName: symbol.containerName,
   };
 }
 
@@ -308,20 +336,45 @@ function declarationForLine(lineText, line) {
   if (!lineText.trim()) return null;
 
   const matchers = [
-    [TAG_DOCUMENT_SYMBOL, 2, "tag", SymbolKind.Class],
-    [CLASS_DOCUMENT_SYMBOL, 3, null, symbolKindForClass],
-    [METHOD_DOCUMENT_SYMBOL, 3, null, symbolKindForMethod],
-    [FIELD_DOCUMENT_SYMBOL, 3, null, SymbolKind.Field],
-    [DESCRIPTOR_DOCUMENT_SYMBOL, 2, "field", SymbolKind.Property],
+    {
+      pattern: TAG_DOCUMENT_SYMBOL,
+      nameIndex: 2,
+      detail: () => "tag",
+      kind: () => SymbolKind.Class,
+    },
+    {
+      pattern: CLASS_DOCUMENT_SYMBOL,
+      nameIndex: 4,
+      detail: match => declarationDetail(match[2], match[3]),
+      kind: match => symbolKindForClass(match[3]),
+    },
+    {
+      pattern: METHOD_DOCUMENT_SYMBOL,
+      nameIndex: 3,
+      detail: match => match[2],
+      kind: match => symbolKindForMethod(match[2]),
+    },
+    {
+      pattern: FIELD_DOCUMENT_SYMBOL,
+      nameIndex: 3,
+      detail: match => match[2],
+      kind: () => SymbolKind.Field,
+    },
+    {
+      pattern: DESCRIPTOR_DOCUMENT_SYMBOL,
+      nameIndex: 2,
+      detail: () => "field",
+      kind: () => SymbolKind.Property,
+    },
   ];
 
-  for (const [pattern, nameIndex, detail, kind] of matchers) {
-    const match = pattern.exec(lineText);
+  for (const matcher of matchers) {
+    const match = matcher.pattern.exec(lineText);
     if (!match) continue;
 
-    const name = match[nameIndex];
-    const resolvedDetail = detail || match[2];
-    const resolvedKind = typeof kind === "function" ? kind(match[2]) : kind;
+    const name = match[matcher.nameIndex];
+    const resolvedDetail = matcher.detail(match);
+    const resolvedKind = matcher.kind(match);
     const character = lineText.indexOf(name, match[1].length);
     if (character < 0) continue;
 
@@ -345,6 +398,15 @@ function declarationForLine(lineText, line) {
   }
 
   return null;
+}
+
+function declarationDetail(modifierText, kind) {
+  const modifiers = modifierText
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  return [...modifiers, kind].join(" ") || kind;
 }
 
 function symbolKindForClass(kind) {
@@ -371,6 +433,39 @@ function indentationLevel(leadingWhitespace) {
     level += character === "\t" ? 2 : 1;
   }
   return level;
+}
+
+function compareWorkspaceSymbols(left, right, query) {
+  return (
+    matchRank(matchName(left.symbol), query) - matchRank(matchName(right.symbol), query) ||
+    declarationRank(left.symbol) - declarationRank(right.symbol) ||
+    left.symbol.name.length - right.symbol.name.length ||
+    left.index - right.index
+  );
+}
+
+function matchName(symbol) {
+  return symbol.matchName || symbol.name;
+}
+
+function matchRank(name, query) {
+  const normalizedName = name.toLowerCase();
+  const normalizedQuery = query.trim().toLowerCase();
+
+  if (normalizedName === normalizedQuery) return 0;
+  if (normalizedName.startsWith(normalizedQuery)) return 1;
+  if (normalizedName.includes(normalizedQuery)) return 2;
+  return 3;
+}
+
+function declarationRank(symbol) {
+  const containerName = symbol.containerName || "";
+  if (/\bextend\b/.test(containerName)) return 20;
+  if (/\bdeclare\b/.test(containerName)) return 10;
+  if (/\bclass\b/.test(containerName)) return 0;
+  if (/\binterface\b/.test(containerName)) return 2;
+  if (/\bmixin\b/.test(containerName)) return 3;
+  return 0;
 }
 
 function matchesQuery(name, query) {

@@ -35,6 +35,10 @@ fs.writeFileSync(
     "\topen @action do(o = {})",
     "\t\tlet dest = target",
     "",
+    "extend class Item",
+    "\tdef patch",
+    "\t\tself",
+    "",
   ].join("\n"),
   "utf8",
 );
@@ -127,7 +131,7 @@ async function main() {
   const allSymbols = await request("workspace/symbol", { query: "" });
   assert.deepEqual(
     allSymbols.result.map(symbol => symbol.name),
-    ["item-view", "item-row", "App", "ns:item-map", "Item"],
+    ["item-view", "item-row", "App", "ns:item-map", "Item · class", "Item · extend class"],
   );
 
   const filteredSymbols = await request("workspace/symbol", { query: "view" });
@@ -138,12 +142,10 @@ async function main() {
 
   const classSymbols = await request("workspace/symbol", { query: "Item" });
   assert.deepEqual(
-    classSymbols.result.map(symbol => `${symbol.containerName}:${symbol.name}`),
+    classSymbols.result.slice(0, 2).map(symbol => `${symbol.containerName}:${symbol.name}`),
     [
-      "tag:item-view",
-      "tag:item-row",
-      "tag:ns:item-map",
-      "class:Item",
+      "global class:Item · class",
+      "extend class:Item · extend class",
     ],
   );
 
@@ -161,7 +163,7 @@ async function main() {
   });
   assert.deepEqual(
     documentSymbols.result.map(symbol => symbol.name),
-    ["item-view", "item-row", "App", "ns:item-map", "Item"],
+    ["item-view", "item-row", "App", "ns:item-map", "Item", "Item"],
   );
   assert.deepEqual(
     documentSymbols.result[0].children.map(symbol => symbol.name),
