@@ -4,7 +4,7 @@ Development Zed language extension for Imba.
 
 This extension wires Zed to the standalone Tree-sitter Imba grammar and ships the first set of Tree-sitter queries for syntax highlighting, CSS injections, bracket matching, indentation, and outline entries.
 
-It also includes a very small language server that indexes `tag ...` declarations so Zed's project symbol search can find Imba tags.
+It also includes a very small language server that indexes `tag ...` declarations so Zed's project symbol search can find Imba tags. The same server can provide indentation-based document symbols for nested tags/classes/methods while the Tree-sitter grammar is still incomplete.
 
 ## Local Testing
 
@@ -30,6 +30,18 @@ node scripts/test-tags-lsp.js
 ```
 
 Zed dev extensions that include language servers are Rust extensions, so local extension development needs Rust installed through `rustup`.
+
+To use the language server for the outline and breadcrumbs instead of `outline.scm`, add this to your Zed settings:
+
+```json
+{
+  "languages": {
+    "Imba": {
+      "document_symbols": "on"
+    }
+  }
+}
+```
 
 ## Publishing Shape
 

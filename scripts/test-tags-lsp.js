@@ -16,11 +16,24 @@ fs.writeFileSync(
   fixturePath,
   [
     "tag item-view",
-    "  def render",
+    "\tcss",
+    "\t\t$box",
+    "\t\t\tpos:fixed",
+    "\tget attachment",
+    "\t\tself.data",
+    "\tdef render",
+    "\t\t<self>",
     "",
     "global tag item-row",
     "export tag App",
     "declare tag ns:item-map",
+    "",
+    "global class Item < OPEmbed",
+    "\tdeclare layout\\string?",
+    "\tget as-icon",
+    "\t\ttype..as-icon or super",
+    "\topen @action do(o = {})",
+    "\t\tlet dest = target",
     "",
   ].join("\n"),
   "utf8",
@@ -114,13 +127,24 @@ async function main() {
   const allSymbols = await request("workspace/symbol", { query: "" });
   assert.deepEqual(
     allSymbols.result.map(symbol => symbol.name),
-    ["item-view", "item-row", "App", "ns:item-map"],
+    ["item-view", "item-row", "App", "ns:item-map", "Item"],
   );
 
   const filteredSymbols = await request("workspace/symbol", { query: "view" });
   assert.deepEqual(
     filteredSymbols.result.map(symbol => symbol.name),
     ["item-view"],
+  );
+
+  const classSymbols = await request("workspace/symbol", { query: "Item" });
+  assert.deepEqual(
+    classSymbols.result.map(symbol => `${symbol.containerName}:${symbol.name}`),
+    [
+      "tag:item-view",
+      "tag:item-row",
+      "tag:ns:item-map",
+      "class:Item",
+    ],
   );
 
   notify("textDocument/didOpen", {
@@ -137,7 +161,15 @@ async function main() {
   });
   assert.deepEqual(
     documentSymbols.result.map(symbol => symbol.name),
-    ["item-view", "item-row", "App", "ns:item-map"],
+    ["item-view", "item-row", "App", "ns:item-map", "Item"],
+  );
+  assert.deepEqual(
+    documentSymbols.result[0].children.map(symbol => symbol.name),
+    ["attachment", "render"],
+  );
+  assert.deepEqual(
+    documentSymbols.result[4].children.map(symbol => symbol.name),
+    ["layout", "as-icon", "open"],
   );
 
   await request("shutdown", null);

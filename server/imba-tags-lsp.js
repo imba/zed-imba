@@ -8,6 +8,32 @@ const TAG_NAME = "[A-Za-z_][\\w]*(?::[A-Za-z_][\\w]*)?(?:-[\\w]+)*";
 const TAG_DECLARATION = new RegExp(
   `^(\\s*)(?:\\$[A-Za-z_][-\\w]*\\$\\s+)?(?:export\\s+(?:default\\s+)?)?(?:(?:extend|global|local|declare|abstract)\\s+)*tag\\s+(${TAG_NAME})\\b`,
 );
+const IDENTIFIER = "[$A-Za-z_\\x7f-\\uffff][$\\w\\x7f-\\uffff]*(?:-[$\\w\\x7f-\\uffff]+)*[?!]?";
+const PROPERTY_NAME = `(?:${IDENTIFIER}|[#]{1,2}${IDENTIFIER}|@!?${IDENTIFIER}|<=>|\\|)`;
+const TAG_DOCUMENT_SYMBOL = new RegExp(
+  `^(\\s*)(?:\\$[A-Za-z_][-\\w]*\\$\\s+)?(?:export\\s+(?:default\\s+)?)?(?:(?:extend|global|local|declare|abstract)\\s+)*tag\\s+(${TAG_NAME})\\b`,
+);
+const CLASS_DOCUMENT_SYMBOL = new RegExp(
+  `^(\\s*)(?:\\$[A-Za-z_][-\\w]*\\$\\s+)?(?:export\\s+(?:default\\s+)?)?(?:(?:global|declare|abstract|extend|strict)\\s+)*(class|interface|mixin)\\s+(${PROPERTY_NAME}(?:\\.${PROPERTY_NAME})*)\\b`,
+);
+const METHOD_DOCUMENT_SYMBOL = new RegExp(
+  `^(\\s*)(?:(?:global|static|protected|private|declare)\\s+)*(def|get|set|constructor)\\s+(?:(?:${IDENTIFIER}|self|this)[.#])?(${PROPERTY_NAME})\\b`,
+);
+const FIELD_DOCUMENT_SYMBOL = new RegExp(
+  `^(\\s*)(?:(?:lazy|static|declare|protected|private)\\s+)*(prop|attr|let|const|isa)\\s+(${PROPERTY_NAME})\\b`,
+);
+const DESCRIPTOR_DOCUMENT_SYMBOL = new RegExp(
+  `^(\\s*)(?:(?:lazy|static|declare|protected|private)\\s+)?(${IDENTIFIER})(?=\\s*(?:\\\\|@))`,
+);
+
+const SymbolKind = {
+  Class: 5,
+  Method: 6,
+  Property: 7,
+  Field: 8,
+  Constructor: 9,
+  Interface: 11,
+};
 
 const ignoredDirectories = new Set([
   ".git",
@@ -150,7 +176,7 @@ function workspaceSymbols(query) {
   const symbols = workspaceSymbols.filter(symbol => !openDocumentUris.has(symbol.location.uri));
 
   for (const [uri, text] of openDocuments) {
-    symbols.push(...symbolsForText(uri, text));
+    symbols.push(...workspaceSymbolsForText(uri, text));
   }
 
   const seen = new Set();
@@ -180,13 +206,7 @@ function documentSymbols(uri) {
   const text = openDocuments.has(uri) ? openDocuments.get(uri) : readUri(uri);
   if (text == null) return [];
 
-  return symbolsForText(uri, text).map(symbol => ({
-    name: symbol.name,
-    detail: "tag",
-    kind: symbol.kind,
-    range: symbol.location.range,
-    selectionRange: symbol.location.range,
-  }));
+  return documentSymbolsForText(text);
 }
 
 function scanDirectory(directory, symbols) {
@@ -203,35 +223,154 @@ function scanDirectory(directory, symbols) {
       if (!ignoredDirectories.has(entry.name)) scanDirectory(fullPath, symbols);
     } else if (entry.isFile() && isImbaFile(entry.name)) {
       const text = readFile(fullPath);
-      if (text != null) symbols.push(...symbolsForText(pathToFileURL(fullPath).href, text));
+      if (text != null) symbols.push(...workspaceSymbolsForText(pathToFileURL(fullPath).href, text));
     }
   }
 }
 
-function symbolsForText(uri, text) {
+function workspaceSymbolsForText(uri, text) {
   const symbols = [];
   const lines = text.split(/\r\n|\r|\n/);
 
   for (let line = 0; line < lines.length; line += 1) {
-    const match = TAG_DECLARATION.exec(lines[line]);
-    if (!match) continue;
+    const tag = TAG_DECLARATION.exec(lines[line]);
+    if (tag) {
+      symbols.push(workspaceSymbolFromMatch(uri, lines[line], line, tag, 2, "tag", SymbolKind.Class));
+      continue;
+    }
 
-    const name = match[2];
-    const character = lines[line].indexOf(name, match[1].length);
-    const range = {
-      start: { line, character },
-      end: { line, character: character + name.length },
-    };
-
-    symbols.push({
-      name,
-      kind: 5,
-      location: { uri, range },
-      containerName: "tag",
-    });
+    const klass = CLASS_DOCUMENT_SYMBOL.exec(lines[line]);
+    if (klass) {
+      symbols.push(
+        workspaceSymbolFromMatch(
+          uri,
+          lines[line],
+          line,
+          klass,
+          3,
+          klass[2],
+          symbolKindForClass(klass[2]),
+        ),
+      );
+    }
   }
 
   return symbols;
+}
+
+function workspaceSymbolFromMatch(uri, lineText, line, match, nameIndex, containerName, kind) {
+  const name = match[nameIndex];
+  const character = lineText.indexOf(name, match[1].length);
+  const range = {
+    start: { line, character },
+    end: { line, character: character + name.length },
+  };
+
+  return {
+    name,
+    kind,
+    location: { uri, range },
+    containerName,
+  };
+}
+
+function documentSymbolsForText(text) {
+  const roots = [];
+  const stack = [];
+  const lines = text.split(/\r\n|\r|\n/);
+
+  for (let line = 0; line < lines.length; line += 1) {
+    const declaration = declarationForLine(lines[line], line);
+    if (!declaration) continue;
+
+    while (stack.length && stack[stack.length - 1].indent >= declaration.indent) {
+      closeDocumentSymbol(stack.pop(), lines, line - 1);
+    }
+
+    const parent = stack[stack.length - 1];
+    if (parent) {
+      parent.symbol.children.push(declaration.symbol);
+    } else {
+      roots.push(declaration.symbol);
+    }
+
+    stack.push(declaration);
+  }
+
+  while (stack.length) {
+    closeDocumentSymbol(stack.pop(), lines, lines.length - 1);
+  }
+
+  return roots;
+}
+
+function declarationForLine(lineText, line) {
+  if (!lineText.trim()) return null;
+
+  const matchers = [
+    [TAG_DOCUMENT_SYMBOL, 2, "tag", SymbolKind.Class],
+    [CLASS_DOCUMENT_SYMBOL, 3, null, symbolKindForClass],
+    [METHOD_DOCUMENT_SYMBOL, 3, null, symbolKindForMethod],
+    [FIELD_DOCUMENT_SYMBOL, 3, null, SymbolKind.Field],
+    [DESCRIPTOR_DOCUMENT_SYMBOL, 2, "field", SymbolKind.Property],
+  ];
+
+  for (const [pattern, nameIndex, detail, kind] of matchers) {
+    const match = pattern.exec(lineText);
+    if (!match) continue;
+
+    const name = match[nameIndex];
+    const resolvedDetail = detail || match[2];
+    const resolvedKind = typeof kind === "function" ? kind(match[2]) : kind;
+    const character = lineText.indexOf(name, match[1].length);
+    if (character < 0) continue;
+
+    return {
+      indent: indentationLevel(match[1]),
+      symbol: {
+        name,
+        detail: resolvedDetail,
+        kind: resolvedKind,
+        range: {
+          start: { line, character: match[1].length },
+          end: { line, character: lineText.length },
+        },
+        selectionRange: {
+          start: { line, character },
+          end: { line, character: character + name.length },
+        },
+        children: [],
+      },
+    };
+  }
+
+  return null;
+}
+
+function symbolKindForClass(kind) {
+  return kind === "interface" ? SymbolKind.Interface : SymbolKind.Class;
+}
+
+function symbolKindForMethod(kind) {
+  if (kind === "constructor") return SymbolKind.Constructor;
+  if (kind === "get" || kind === "set") return SymbolKind.Property;
+  return SymbolKind.Method;
+}
+
+function closeDocumentSymbol(declaration, lines, endLine) {
+  const line = Math.max(declaration.symbol.range.start.line, endLine);
+  declaration.symbol.range.end = {
+    line,
+    character: lines[line] ? lines[line].length : 0,
+  };
+}
+
+function indentationLevel(leadingWhitespace) {
+  let level = 0;
+  for (const character of leadingWhitespace) {
+    level += character === "\t" ? 2 : 1;
+  }
+  return level;
 }
 
 function matchesQuery(name, query) {
