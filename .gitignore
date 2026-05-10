@@ -1,3 +1,4 @@
 .grammar-repo/
 grammars/
-
+extension.wasm
+target/

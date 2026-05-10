@@ -4,6 +4,8 @@ Development Zed language extension for Imba.
 
 This extension wires Zed to the standalone Tree-sitter Imba grammar and ships the first set of Tree-sitter queries for syntax highlighting, CSS injections, bracket matching, indentation, and outline entries.
 
+It also includes a very small language server that indexes `tag ...` declarations so Zed's project symbol search can find Imba tags.
+
 ## Local Testing
 
 The extension currently points at the local grammar repository in `/Users/sindre/repos/treesitter-imba`. If the grammar changes, commit those changes in that repo and then run:
@@ -20,6 +22,14 @@ Then in Zed:
 4. Open an `.imba` file, for example `/Users/sindre/repos/treesitter-imba/examples/syntax.imba`.
 
 If Zed does not pick up changes, reinstall or reload the dev extension and check `zed: open log`.
+
+To smoke-test the language server outside Zed:
+
+```sh
+node scripts/test-tags-lsp.js
+```
+
+Zed dev extensions that include language servers are Rust extensions, so local extension development needs Rust installed through `rustup`.
 
 ## Publishing Shape
 
