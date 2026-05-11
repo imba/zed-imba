@@ -10,8 +10,6 @@ repository = "https://github.com/imba/zed-imba"
 name = "Imba Tags"
 languages = ["Imba"]
 
-# Local dev grammar source. Run `node scripts/update-local-grammar-rev.js`
-# after committing changes in /Users/sindre/repos/treesitter-imba.
 [grammars.imba]
-repository = "file:///Users/sindre/repos/treesitter-imba"
+repository = "https://github.com/imba/treesitter-imba"
 rev = "597c269b51da751bd9f7424f805007ec10493aa5"

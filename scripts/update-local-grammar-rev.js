@@ -5,8 +5,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const extensionDir = path.resolve(__dirname, "..");
-const grammarRepo = process.argv[2] ? path.resolve(process.argv[2]) : "/Users/sindre/repos/treesitter-imba";
+const args = process.argv.slice(2);
+const useLocalRepository = args.includes("--local");
+const grammarRepoArg = args.find(arg => arg !== "--local");
+const grammarRepo = grammarRepoArg
+  ? path.resolve(grammarRepoArg)
+  : path.resolve(extensionDir, "..", "treesitter-imba");
 const manifestPath = path.join(extensionDir, "extension.toml");
+const publicGrammarRepository = "https://github.com/imba/treesitter-imba";
 
 function run(command, args, options = {}) {
   const result = childProcess.spawnSync(command, args, {
@@ -35,7 +41,7 @@ if (status) {
 }
 
 const rev = run("git", ["rev-parse", "HEAD"], { cwd: grammarRepo });
-const repository = `file://${grammarRepo}`;
+const repository = useLocalRepository ? `file://${grammarRepo}` : publicGrammarRepository;
 let manifest = fs.readFileSync(manifestPath, "utf8");
 manifest = manifest.replace(
   /\[grammars\.imba\]\n[\s\S]*$/,
