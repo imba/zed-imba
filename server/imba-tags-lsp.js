@@ -22,6 +22,9 @@ const METHOD_DOCUMENT_SYMBOL = new RegExp(
 const FIELD_DOCUMENT_SYMBOL = new RegExp(
   `^(\\s*)(?:(?:lazy|static|declare|protected|private)\\s+)*(prop|attr|let|const|isa)\\s+(${PROPERTY_NAME})\\b`,
 );
+const ACTION_DESCRIPTOR_DEFINITION = new RegExp(
+  `^(\\s*)(${IDENTIFIER})(?=\\s+@action\\b)`,
+);
 const DESCRIPTOR_DOCUMENT_SYMBOL = new RegExp(
   `^(\\s*)(?:(?:lazy|static|declare|protected|private)\\s+)?(${IDENTIFIER})(?=\\s*(?:\\\\|@))`,
 );
@@ -52,6 +55,7 @@ let shutdownRequested = false;
 let rootPath = null;
 let workspaceFolders = [];
 let cachedWorkspaceSymbols = null;
+let cachedDefinitionIndex = null;
 const openDocuments = new Map();
 
 process.stdin.on("data", chunk => {
@@ -92,6 +96,7 @@ function handleMessage(message) {
     respond(message.id, {
       capabilities: {
         textDocumentSync: 1,
+        definitionProvider: true,
         documentSymbolProvider: true,
         workspaceSymbolProvider: true,
       },
@@ -146,6 +151,13 @@ function handleMessage(message) {
   if (message.method === "textDocument/documentSymbol") {
     const uri = message.params && message.params.textDocument && message.params.textDocument.uri;
     respond(message.id, documentSymbols(uri));
+    return;
+  }
+
+  if (message.method === "textDocument/definition") {
+    const uri = message.params && message.params.textDocument && message.params.textDocument.uri;
+    const position = message.params && message.params.position;
+    respond(message.id, definitionsAtPosition(uri, position));
     return;
   }
 
@@ -234,6 +246,298 @@ function scanDirectory(directory, symbols) {
       if (text != null) symbols.push(...workspaceSymbolsForText(pathToFileURL(fullPath).href, text));
     }
   }
+}
+
+function getDefinitionIndex() {
+  const baseIndex = getBaseDefinitionIndex();
+  const openDocumentUris = new Set(openDocuments.keys());
+  const index = createDefinitionIndex();
+
+  for (const collection of ["tags", "classes", "methods"]) {
+    for (const [name, definitions] of baseIndex[collection]) {
+      for (const definition of definitions) {
+        if (!openDocumentUris.has(definition.uri)) {
+          addDefinition(index[collection], name, definition);
+        }
+      }
+    }
+  }
+
+  for (const [uri, text] of openDocuments) {
+    addDefinitionsForText(index, uri, text);
+  }
+
+  return index;
+}
+
+function getBaseDefinitionIndex() {
+  if (cachedDefinitionIndex) return cachedDefinitionIndex;
+
+  const index = createDefinitionIndex();
+  for (const folder of workspaceFolders.length ? workspaceFolders : [rootPath]) {
+    if (folder) scanDefinitionsDirectory(folder, index);
+  }
+
+  cachedDefinitionIndex = index;
+  return index;
+}
+
+function createDefinitionIndex() {
+  return {
+    tags: new Map(),
+    classes: new Map(),
+    methods: new Map(),
+  };
+}
+
+function scanDefinitionsDirectory(directory, index) {
+  let entries;
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (!ignoredDirectories.has(entry.name)) scanDefinitionsDirectory(fullPath, index);
+    } else if (entry.isFile() && isImbaFile(entry.name)) {
+      const text = readFile(fullPath);
+      if (text != null) addDefinitionsForText(index, pathToFileURL(fullPath).href, text);
+    }
+  }
+}
+
+function addDefinitionsForText(index, uri, text) {
+  const lines = text.split(/\r\n|\r|\n/);
+
+  for (let line = 0; line < lines.length; line += 1) {
+    const lineText = lines[line];
+    const tag = TAG_DECLARATION.exec(lineText);
+    if (tag) {
+      addDefinition(index.tags, tag[2], definitionFromMatch(uri, lineText, line, tag, 2, "tag"));
+      continue;
+    }
+
+    const klass = CLASS_DOCUMENT_SYMBOL.exec(lineText);
+    if (klass) {
+      addDefinition(
+        index.classes,
+        klass[4],
+        definitionFromMatch(uri, lineText, line, klass, 4, declarationDetail(klass[2], klass[3])),
+      );
+      continue;
+    }
+
+    const method = METHOD_DOCUMENT_SYMBOL.exec(lineText);
+    if (method) {
+      addDefinition(index.methods, method[3], definitionFromMatch(uri, lineText, line, method, 3, method[2]));
+      continue;
+    }
+
+    const action = ACTION_DESCRIPTOR_DEFINITION.exec(lineText);
+    if (action) {
+      addDefinition(index.methods, action[2], definitionFromMatch(uri, lineText, line, action, 2, "action"));
+    }
+  }
+}
+
+function definitionFromMatch(uri, lineText, line, match, nameIndex, detail) {
+  const name = match[nameIndex];
+  const character = lineText.indexOf(name, match[1].length);
+  const selectionRange = {
+    start: { line, character },
+    end: { line, character: character + name.length },
+  };
+
+  return {
+    name,
+    detail,
+    uri,
+    range: selectionRange,
+  };
+}
+
+function addDefinition(map, name, definition) {
+  const existing = map.get(name);
+  if (existing) {
+    existing.push(definition);
+  } else {
+    map.set(name, [definition]);
+  }
+}
+
+function definitionsAtPosition(uri, position) {
+  if (!position || typeof position.line !== "number" || typeof position.character !== "number") {
+    return [];
+  }
+
+  const text = openDocuments.has(uri) ? openDocuments.get(uri) : readUri(uri);
+  if (text == null) return [];
+
+  const target = definitionTargetAtPosition(text, position);
+  if (!target) return [];
+
+  const index = getDefinitionIndex();
+
+  if (target.kind === "tag") {
+    const tagDefinitions = definitionsForNames(index.tags, [target.name]);
+    const classDefinitions = definitionsForNames(index.classes, [target.name]);
+    return locationsForDefinitions([...tagDefinitions, ...classDefinitions]);
+  }
+
+  if (target.kind === "class") {
+    return locationsForDefinitions(definitionsForNames(index.classes, [target.name]));
+  }
+
+  if (target.kind === "method") {
+    return locationsForDefinitions(definitionsForNames(index.methods, methodLookupNames(target.name)));
+  }
+
+  return [];
+}
+
+function definitionTargetAtPosition(text, position) {
+  const lines = text.split(/\r\n|\r|\n/);
+  const lineText = lines[position.line] || "";
+  const token = tokenAtPosition(lineText, position.character);
+  if (!token) return null;
+
+  if (isTagNameContext(lineText, token)) {
+    const name = tagLookupName(token.name);
+    if (name) return { kind: "tag", name };
+  }
+
+  if (isTagDeclarationName(lineText, token)) {
+    return { kind: "tag", name: token.name };
+  }
+
+  if (isClassDeclarationName(lineText, token)) {
+    return { kind: "class", name: token.name };
+  }
+
+  if (isMethodDeclarationName(lineText, token) || isMethodCallContext(lineText, token)) {
+    return { kind: "method", name: token.name };
+  }
+
+  return null;
+}
+
+function tokenAtPosition(lineText, character) {
+  if (!lineText) return null;
+
+  let index = Math.min(Math.max(character, 0), lineText.length - 1);
+  if (!isSymbolCharacter(lineText[index]) && index > 0 && isSymbolCharacter(lineText[index - 1])) {
+    index -= 1;
+  }
+
+  if (!isSymbolCharacter(lineText[index])) return null;
+
+  let start = index;
+  while (start > 0 && isSymbolCharacter(lineText[start - 1])) start -= 1;
+
+  let end = index + 1;
+  while (end < lineText.length && isSymbolCharacter(lineText[end])) end += 1;
+
+  return {
+    name: lineText.slice(start, end),
+    start,
+    end,
+  };
+}
+
+function isSymbolCharacter(character) {
+  return character != null && /[$\w\x7f-\uffff?!#@:-]/u.test(character);
+}
+
+function isTagNameContext(lineText, token) {
+  return /<\s*\/?\s*$/.test(lineText.slice(0, token.start));
+}
+
+function tagLookupName(name) {
+  const refStart = name.indexOf("$");
+  if (refStart === -1) return name;
+  return name.slice(0, refStart);
+}
+
+function isTagDeclarationName(lineText, token) {
+  const match = TAG_DECLARATION.exec(lineText);
+  return matchNameAtToken(lineText, match, 2, token);
+}
+
+function isClassDeclarationName(lineText, token) {
+  const match = CLASS_DOCUMENT_SYMBOL.exec(lineText);
+  return matchNameAtToken(lineText, match, 4, token);
+}
+
+function isMethodDeclarationName(lineText, token) {
+  const method = METHOD_DOCUMENT_SYMBOL.exec(lineText);
+  if (matchNameAtToken(lineText, method, 3, token)) return true;
+
+  const action = ACTION_DESCRIPTOR_DEFINITION.exec(lineText);
+  return matchNameAtToken(lineText, action, 2, token);
+}
+
+function matchNameAtToken(lineText, match, nameIndex, token) {
+  if (!match) return false;
+
+  const name = match[nameIndex];
+  const character = lineText.indexOf(name, match[1].length);
+  return token.start >= character && token.end <= character + name.length;
+}
+
+function isMethodCallContext(lineText, token) {
+  const before = lineText.slice(0, token.start);
+  const after = lineText.slice(token.end);
+  const previous = previousNonWhitespace(before);
+  const next = nextNonWhitespace(after);
+
+  if (previous === ".") return true;
+  if (token.name.endsWith("!")) return true;
+  if (next === "(" || next === "!") return true;
+  if (/[=@]\s*$/.test(before)) return true;
+
+  return false;
+}
+
+function previousNonWhitespace(text) {
+  const match = /\S\s*$/.exec(text);
+  return match ? match[0].trim() : "";
+}
+
+function nextNonWhitespace(text) {
+  const match = /^\s*(\S)/.exec(text);
+  return match ? match[1] : "";
+}
+
+function methodLookupNames(name) {
+  if (name.endsWith("!")) return [name, name.slice(0, -1)];
+  return [name];
+}
+
+function definitionsForNames(map, names) {
+  const definitions = [];
+  const seen = new Set();
+
+  for (const name of names) {
+    for (const definition of map.get(name) || []) {
+      const key = `${definition.uri}\0${definition.range.start.line}\0${definition.range.start.character}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        definitions.push(definition);
+      }
+    }
+  }
+
+  return definitions;
+}
+
+function locationsForDefinitions(definitions) {
+  return definitions.slice(0, 200).map(definition => ({
+    uri: definition.uri,
+    range: definition.range,
+  }));
 }
 
 function workspaceSymbolsForText(uri, text) {

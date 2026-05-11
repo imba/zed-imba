@@ -11,37 +11,42 @@ const extensionRoot = path.resolve(__dirname, "..");
 const serverPath = path.join(extensionRoot, "server", "imba-tags-lsp.js");
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "imba-tags-lsp-"));
 const fixturePath = path.join(fixtureRoot, "item-map.imba");
+const fixtureText = [
+  "tag item-view",
+  "\tcss",
+  "\t\t$box",
+  "\t\t\tpos:fixed",
+  "\tget attachment",
+  "\t\tself.data",
+  "\tdef render",
+  "\t\t<self>",
+  "",
+  "global tag item-row",
+  "export tag App",
+  "declare tag ns:item-map",
+  "",
+  "global class Item < OPEmbed",
+  "\tdeclare layout\\string?",
+  "\tget as-icon",
+  "\t\ttype..as-icon or super",
+  "\topen @action do(o = {})",
+  "\t\tlet dest = target",
+  "",
+  "extend class Item",
+  "\tdef patch",
+  "\t\tself",
+  "",
+  "tag app-root",
+  "\tdef render",
+  "\t\t<item-view>",
+  "\t\t<item-row$row>",
+  "\t\t<Item>",
+  "\t\titem.as-icon",
+  "\t\topen!",
+  "",
+].join("\n");
 
-fs.writeFileSync(
-  fixturePath,
-  [
-    "tag item-view",
-    "\tcss",
-    "\t\t$box",
-    "\t\t\tpos:fixed",
-    "\tget attachment",
-    "\t\tself.data",
-    "\tdef render",
-    "\t\t<self>",
-    "",
-    "global tag item-row",
-    "export tag App",
-    "declare tag ns:item-map",
-    "",
-    "global class Item < OPEmbed",
-    "\tdeclare layout\\string?",
-    "\tget as-icon",
-    "\t\ttype..as-icon or super",
-    "\topen @action do(o = {})",
-    "\t\tlet dest = target",
-    "",
-    "extend class Item",
-    "\tdef patch",
-    "\t\tself",
-    "",
-  ].join("\n"),
-  "utf8",
-);
+fs.writeFileSync(fixturePath, fixtureText, "utf8");
 
 const server = spawn(process.execPath, [serverPath], {
   cwd: extensionRoot,
@@ -119,6 +124,21 @@ function write(message) {
   server.stdin.write(`Content-Length: ${Buffer.byteLength(json, "utf8")}\r\n\r\n${json}`);
 }
 
+function positionOf(needle, offset = 0) {
+  const index = fixtureText.indexOf(needle);
+  assert.notEqual(index, -1, `missing fixture text: ${needle}`);
+  const before = fixtureText.slice(0, index + offset);
+  const lines = before.split("\n");
+  return {
+    line: lines.length - 1,
+    character: lines[lines.length - 1].length,
+  };
+}
+
+function lineOf(needle) {
+  return positionOf(needle).line;
+}
+
 async function main() {
   await request("initialize", {
     processId: process.pid,
@@ -131,7 +151,7 @@ async function main() {
   const allSymbols = await request("workspace/symbol", { query: "" });
   assert.deepEqual(
     allSymbols.result.map(symbol => symbol.name),
-    ["item-view", "item-row", "App", "ns:item-map", "Item · class", "Item · extend class"],
+    ["item-view", "item-row", "App", "ns:item-map", "Item · class", "Item · extend class", "app-root"],
   );
 
   const filteredSymbols = await request("workspace/symbol", { query: "view" });
@@ -154,16 +174,46 @@ async function main() {
       uri: pathToFileURL(fixturePath).href,
       languageId: "imba",
       version: 1,
-      text: fs.readFileSync(fixturePath, "utf8"),
+      text: fixtureText,
     },
   });
+
+  const tagDefinition = await request("textDocument/definition", {
+    textDocument: { uri: pathToFileURL(fixturePath).href },
+    position: positionOf("<item-view>", 2),
+  });
+  assert.equal(tagDefinition.result[0].range.start.line, lineOf("tag item-view"));
+
+  const tagRefDefinition = await request("textDocument/definition", {
+    textDocument: { uri: pathToFileURL(fixturePath).href },
+    position: positionOf("<item-row$row>", 2),
+  });
+  assert.equal(tagRefDefinition.result[0].range.start.line, lineOf("global tag item-row"));
+
+  const tagClassDefinition = await request("textDocument/definition", {
+    textDocument: { uri: pathToFileURL(fixturePath).href },
+    position: positionOf("<Item>", 2),
+  });
+  assert.equal(tagClassDefinition.result[0].range.start.line, lineOf("global class Item"));
+
+  const methodDefinitions = await request("textDocument/definition", {
+    textDocument: { uri: pathToFileURL(fixturePath).href },
+    position: positionOf("item.as-icon", "item.".length + 1),
+  });
+  assert.ok(methodDefinitions.result.some(location => location.range.start.line === lineOf("\tget as-icon")));
+
+  const actionDefinitions = await request("textDocument/definition", {
+    textDocument: { uri: pathToFileURL(fixturePath).href },
+    position: positionOf("\t\topen!", "\t\t".length + 1),
+  });
+  assert.ok(actionDefinitions.result.some(location => location.range.start.line === lineOf("\topen @action")));
 
   const documentSymbols = await request("textDocument/documentSymbol", {
     textDocument: { uri: pathToFileURL(fixturePath).href },
   });
   assert.deepEqual(
     documentSymbols.result.map(symbol => symbol.name),
-    ["item-view", "item-row", "App", "ns:item-map", "Item", "Item"],
+    ["item-view", "item-row", "App", "ns:item-map", "Item", "Item", "app-root"],
   );
   assert.deepEqual(
     documentSymbols.result[0].children.map(symbol => symbol.name),
