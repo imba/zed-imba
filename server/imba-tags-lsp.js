@@ -3,6 +3,10 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { fileURLToPath, pathToFileURL } = require("node:url");
+const ImbaScriptInfo = require("./imba-monarch.js");
+
+const SEMANTIC_TOKEN_TYPES = ImbaScriptInfo.SemanticTokenTypes.filter(tokenType => typeof tokenType === "string");
+const SEMANTIC_TOKEN_MODIFIERS = ImbaScriptInfo.SemanticTokenModifiers || [];
 
 const TAG_NAME = "[A-Za-z_][\\w]*(?::[A-Za-z_][\\w]*)?(?:-[\\w]+)*";
 const TAG_DECLARATION = new RegExp(
@@ -100,6 +104,13 @@ function handleMessage(message) {
         textDocumentSync: 1,
         definitionProvider: true,
         documentSymbolProvider: true,
+        semanticTokensProvider: {
+          legend: {
+            tokenTypes: SEMANTIC_TOKEN_TYPES,
+            tokenModifiers: SEMANTIC_TOKEN_MODIFIERS,
+          },
+          full: true,
+        },
         workspaceSymbolProvider: true,
       },
       serverInfo: {
@@ -160,6 +171,12 @@ function handleMessage(message) {
     const uri = message.params && message.params.textDocument && message.params.textDocument.uri;
     const position = message.params && message.params.position;
     respond(message.id, definitionsAtPosition(uri, position));
+    return;
+  }
+
+  if (message.method === "textDocument/semanticTokens/full") {
+    const uri = message.params && message.params.textDocument && message.params.textDocument.uri;
+    respond(message.id, semanticTokens(uri));
     return;
   }
 
@@ -229,6 +246,91 @@ function documentSymbols(uri) {
   if (text == null) return [];
 
   return documentSymbolsForText(text);
+}
+
+function semanticTokens(uri) {
+  const text = openDocuments.has(uri) ? openDocuments.get(uri) : readUri(uri);
+  if (text == null) return { data: [] };
+
+  try {
+    const script = new ImbaScriptInfo.default({ fileName: uriToPath(uri) || uri || "untitled.imba" }, text);
+    return { data: lspSemanticTokenData(text, script.getSemanticTokens()) };
+  } catch (error) {
+    log(`failed to compute semantic tokens: ${error.stack || error.message}`);
+    return { data: [] };
+  }
+}
+
+function lspSemanticTokenData(text, semanticTokens) {
+  const lineStarts = lineStartsForText(text);
+  const data = [];
+  let previousLine = 0;
+  let previousCharacter = 0;
+
+  const tokens = semanticTokens
+    .map(([offset, length, tokenType, tokenModifiers]) => ({
+      offset,
+      length,
+      tokenType,
+      tokenModifiers,
+      position: positionAtOffset(lineStarts, offset),
+    }))
+    .filter(token => (
+      token.length > 0 &&
+      token.tokenType >= 0 &&
+      token.tokenType < SEMANTIC_TOKEN_TYPES.length &&
+      token.position
+    ))
+    .sort((left, right) => left.offset - right.offset || left.length - right.length);
+
+  for (const token of tokens) {
+    const tokenLineEnd = lineStarts[token.position.line + 1] == null
+      ? text.length
+      : lineStarts[token.position.line + 1] - 1;
+    const length = Math.min(token.length, Math.max(0, tokenLineEnd - token.offset));
+    if (!length) continue;
+
+    const lineDelta = token.position.line - previousLine;
+    const characterDelta = lineDelta === 0
+      ? token.position.character - previousCharacter
+      : token.position.character;
+
+    data.push(lineDelta, characterDelta, length, token.tokenType, token.tokenModifiers || 0);
+
+    previousLine = token.position.line;
+    previousCharacter = token.position.character;
+  }
+
+  return data;
+}
+
+function lineStartsForText(text) {
+  const starts = [0];
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "\n") starts.push(index + 1);
+  }
+  return starts;
+}
+
+function positionAtOffset(lineStarts, offset) {
+  if (offset < 0) return null;
+
+  let low = 0;
+  let high = lineStarts.length - 1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (lineStarts[middle] <= offset) {
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+
+  const line = Math.max(0, high);
+  return {
+    line,
+    character: offset - lineStarts[line],
+  };
 }
 
 function scanDirectory(directory, symbols) {

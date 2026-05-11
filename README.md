@@ -4,7 +4,7 @@ Development Zed language extension for Imba.
 
 This extension wires Zed to the standalone Tree-sitter Imba grammar and ships the first set of Tree-sitter queries for syntax highlighting, CSS injections, bracket matching, indentation, and outline entries.
 
-It also includes a very small language server that indexes `tag ...` and `class ...` declarations so Zed's project symbol search can find Imba tags/classes. The same server can provide indentation-based document symbols for nested tags/classes/methods while the Tree-sitter grammar is still incomplete, plus basic goto-definition for tag names, custom CSS units, and naive same-name method/action lookups.
+It also includes a very small language server that indexes `tag ...` and `class ...` declarations so Zed's project symbol search can find Imba tags/classes. The same server can provide indentation-based document symbols for nested tags/classes/methods while the Tree-sitter grammar is still incomplete, basic goto-definition for tag names, custom CSS units, and naive same-name method/action lookups, plus semantic tokens from the vendored `imba-monarch` parser.
 
 ## Local Testing
 

@@ -2,6 +2,7 @@ use std::{env, fs};
 use zed_extension_api::{self as zed, Result};
 
 const IMBA_TAGS_LSP: &str = include_str!("../server/imba-tags-lsp.js");
+const IMBA_MONARCH: &str = include_str!("../server/imba-monarch.js");
 
 struct ImbaExtension;
 
@@ -24,6 +25,10 @@ impl zed::Extension for ImbaExtension {
         let server_path = server_directory.join("imba-tags-lsp.js");
         fs::write(&server_path, IMBA_TAGS_LSP)
             .map_err(|err| format!("failed to write Imba language server: {err}"))?;
+
+        let monarch_path = server_directory.join("imba-monarch.js");
+        fs::write(&monarch_path, IMBA_MONARCH)
+            .map_err(|err| format!("failed to write Imba Monarch bundle: {err}"))?;
 
         Ok(zed::Command {
             command: zed::node_binary_path()?,

@@ -46,6 +46,8 @@ const fixtureText = [
   "\t\tcss pt:0.5navh",
   "\t\titem.as-icon",
   "\t\topen!",
+  "\t\tlet local = item.as-icon",
+  "\t\tlocal",
   "",
 ].join("\n");
 
@@ -142,8 +144,28 @@ function lineOf(needle) {
   return positionOf(needle).line;
 }
 
+function decodeSemanticTokens(data) {
+  const tokens = [];
+  let line = 0;
+  let character = 0;
+
+  for (let index = 0; index < data.length; index += 5) {
+    line += data[index];
+    character = data[index] === 0 ? character + data[index + 1] : data[index + 1];
+    tokens.push({
+      line,
+      character,
+      length: data[index + 2],
+      tokenType: data[index + 3],
+      tokenModifiers: data[index + 4],
+    });
+  }
+
+  return tokens;
+}
+
 async function main() {
-  await request("initialize", {
+  const initialized = await request("initialize", {
     processId: process.pid,
     rootUri: pathToFileURL(fixtureRoot).href,
     workspaceFolders: [{ name: "fixture", uri: pathToFileURL(fixtureRoot).href }],
@@ -180,6 +202,35 @@ async function main() {
       text: fixtureText,
     },
   });
+
+  const semanticTokens = await request("textDocument/semanticTokens/full", {
+    textDocument: { uri: pathToFileURL(fixturePath).href },
+  });
+  const legend = initialized.result.capabilities.semanticTokensProvider.legend;
+  const variableType = legend.tokenTypes.indexOf("variable");
+  const declarationModifier = 1 << legend.tokenModifiers.indexOf("declaration");
+  const decodedSemanticTokens = decodeSemanticTokens(semanticTokens.result.data);
+  const localDeclaration = positionOf("\t\tlet local", "\t\tlet ".length);
+  const localReference = positionOf("\t\tlocal", "\t\t".length);
+
+  assert.ok(
+    decodedSemanticTokens.some(token => (
+      token.line === localDeclaration.line &&
+      token.character === localDeclaration.character &&
+      token.length === "local".length &&
+      token.tokenType === variableType &&
+      token.tokenModifiers & declarationModifier
+    )),
+  );
+  assert.ok(
+    decodedSemanticTokens.some(token => (
+      token.line === localReference.line &&
+      token.character === localReference.character &&
+      token.length === "local".length &&
+      token.tokenType === variableType &&
+      !(token.tokenModifiers & declarationModifier)
+    )),
+  );
 
   const tagDefinition = await request("textDocument/definition", {
     textDocument: { uri: pathToFileURL(fixturePath).href },
