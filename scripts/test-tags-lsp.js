@@ -14,6 +14,7 @@ const fixturePath = path.join(fixtureRoot, "item-map.imba");
 const fixtureText = [
   "tag item-view",
   "\tcss",
+  "\t\t1navh:10px",
   "\t\t$box",
   "\t\t\tpos:fixed",
   "\tget attachment",
@@ -41,6 +42,8 @@ const fixtureText = [
   "\t\t<item-view>",
   "\t\t<item-row$row>",
   "\t\t<Item>",
+  "\t\t<div[h:40navh mt:1navh]>",
+  "\t\tcss pt:0.5navh",
   "\t\titem.as-icon",
   "\t\topen!",
   "",
@@ -195,6 +198,24 @@ async function main() {
     position: positionOf("<Item>", 2),
   });
   assert.equal(tagClassDefinition.result[0].range.start.line, lineOf("global class Item"));
+
+  const cssUnitDefinition = await request("textDocument/definition", {
+    textDocument: { uri: pathToFileURL(fixturePath).href },
+    position: positionOf("h:40navh", "h:40".length + 1),
+  });
+  assert.equal(cssUnitDefinition.result[0].range.start.line, lineOf("1navh:10px"));
+
+  const decimalCssUnitDefinition = await request("textDocument/definition", {
+    textDocument: { uri: pathToFileURL(fixturePath).href },
+    position: positionOf("pt:0.5navh", "pt:0.5".length + 1),
+  });
+  assert.equal(decimalCssUnitDefinition.result[0].range.start.line, lineOf("1navh:10px"));
+
+  const cssUnitSelfDefinition = await request("textDocument/definition", {
+    textDocument: { uri: pathToFileURL(fixturePath).href },
+    position: positionOf("1navh:10px", "1".length + 1),
+  });
+  assert.equal(cssUnitSelfDefinition.result[0].range.start.line, lineOf("1navh:10px"));
 
   const methodDefinitions = await request("textDocument/definition", {
     textDocument: { uri: pathToFileURL(fixturePath).href },

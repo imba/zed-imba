@@ -25,6 +25,8 @@ const FIELD_DOCUMENT_SYMBOL = new RegExp(
 const ACTION_DESCRIPTOR_DEFINITION = new RegExp(
   `^(\\s*)(${IDENTIFIER})(?=\\s+@action\\b)`,
 );
+const CSS_CUSTOM_UNIT_DECLARATION = /(^|[\s\[\(])(\d+)([A-Za-z_][\w-]*)(?=\s*[:=])/g;
+const CSS_NUMBER_UNIT = /(^|[^\w\x7f-\uffff-])([+-]?(?:\d+(?:\.\d+)?|\.\d+))([A-Za-z_][\w-]*)(?![$\w\x7f-\uffff-])/g;
 const DESCRIPTOR_DOCUMENT_SYMBOL = new RegExp(
   `^(\\s*)(?:(?:lazy|static|declare|protected|private)\\s+)?(${IDENTIFIER})(?=\\s*(?:\\\\|@))`,
 );
@@ -253,7 +255,7 @@ function getDefinitionIndex() {
   const openDocumentUris = new Set(openDocuments.keys());
   const index = createDefinitionIndex();
 
-  for (const collection of ["tags", "classes", "methods"]) {
+  for (const collection of ["tags", "classes", "methods", "cssUnits"]) {
     for (const [name, definitions] of baseIndex[collection]) {
       for (const definition of definitions) {
         if (!openDocumentUris.has(definition.uri)) {
@@ -287,6 +289,7 @@ function createDefinitionIndex() {
     tags: new Map(),
     classes: new Map(),
     methods: new Map(),
+    cssUnits: new Map(),
   };
 }
 
@@ -314,6 +317,8 @@ function addDefinitionsForText(index, uri, text) {
 
   for (let line = 0; line < lines.length; line += 1) {
     const lineText = lines[line];
+    addCssUnitDefinitionsForLine(index, uri, lineText, line);
+
     const tag = TAG_DECLARATION.exec(lineText);
     if (tag) {
       addDefinition(index.tags, tag[2], definitionFromMatch(uri, lineText, line, tag, 2, "tag"));
@@ -343,19 +348,40 @@ function addDefinitionsForText(index, uri, text) {
   }
 }
 
+function addCssUnitDefinitionsForLine(index, uri, lineText, line) {
+  if (/^\s*#/.test(lineText)) return;
+
+  const code = codeBeforeComment(lineText);
+  CSS_CUSTOM_UNIT_DECLARATION.lastIndex = 0;
+
+  let match;
+  while ((match = CSS_CUSTOM_UNIT_DECLARATION.exec(code))) {
+    const numberStart = match.index + match[1].length;
+    const nameStart = numberStart + match[2].length;
+    const name = match[3];
+    addDefinition(
+      index.cssUnits,
+      name,
+      definitionFromRange(uri, line, nameStart, nameStart + name.length, name, "css unit"),
+    );
+  }
+}
+
 function definitionFromMatch(uri, lineText, line, match, nameIndex, detail) {
   const name = match[nameIndex];
   const character = lineText.indexOf(name, match[1].length);
-  const selectionRange = {
-    start: { line, character },
-    end: { line, character: character + name.length },
-  };
+  return definitionFromRange(uri, line, character, character + name.length, name, detail);
+}
 
+function definitionFromRange(uri, line, startCharacter, endCharacter, name, detail) {
   return {
     name,
     detail,
     uri,
-    range: selectionRange,
+    range: {
+      start: { line, character: startCharacter },
+      end: { line, character: endCharacter },
+    },
   };
 }
 
@@ -395,12 +421,21 @@ function definitionsAtPosition(uri, position) {
     return locationsForDefinitions(definitionsForNames(index.methods, methodLookupNames(target.name)));
   }
 
+  if (target.kind === "cssUnit") {
+    return locationsForDefinitions(definitionsForNames(index.cssUnits, [target.name]));
+  }
+
   return [];
 }
 
 function definitionTargetAtPosition(text, position) {
   const lines = text.split(/\r\n|\r|\n/);
   const lineText = lines[position.line] || "";
+  const cssUnit = cssUnitAtPosition(lineText, position.character);
+  if (cssUnit && isCssUnitContext(lineText, cssUnit)) {
+    return { kind: "cssUnit", name: cssUnit.name };
+  }
+
   const token = tokenAtPosition(lineText, position.character);
   if (!token) return null;
 
@@ -514,6 +549,45 @@ function nextNonWhitespace(text) {
 function methodLookupNames(name) {
   if (name.endsWith("!")) return [name, name.slice(0, -1)];
   return [name];
+}
+
+function cssUnitAtPosition(lineText, character) {
+  if (!lineText || /^\s*#/.test(lineText)) return null;
+
+  const code = codeBeforeComment(lineText);
+  if (character > code.length) return null;
+
+  CSS_NUMBER_UNIT.lastIndex = 0;
+  let match;
+  while ((match = CSS_NUMBER_UNIT.exec(code))) {
+    const start = match.index + match[1].length;
+    const number = match[2];
+    const name = match[3];
+    const nameStart = start + number.length;
+    const end = nameStart + name.length;
+
+    if (character >= start && character <= end) {
+      return { name, start, end, nameStart, number };
+    }
+  }
+
+  return null;
+}
+
+function isCssUnitContext(lineText, unit) {
+  if (/^\s*[:=]/.test(lineText.slice(unit.end))) return true;
+
+  const before = lineText.slice(0, unit.start);
+  if (/(?:^|\s)(?:global\s+)?css(?:\s|$)/.test(before)) return true;
+  if (/(?:^|[\s\[\(])[-$@.#\w]+(?:\.\.[-$@.#\w]+)?\s*[:=][^\n]*$/.test(before)) return true;
+
+  return false;
+}
+
+function codeBeforeComment(lineText) {
+  const match = /(^|\s)#(?:\s|$)/.exec(lineText);
+  if (!match) return lineText;
+  return lineText.slice(0, match.index + match[1].length);
 }
 
 function definitionsForNames(map, names) {
